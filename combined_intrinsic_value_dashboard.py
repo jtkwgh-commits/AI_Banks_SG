@@ -65,6 +65,7 @@ def shared_columns(frame: pd.DataFrame) -> pd.DataFrame:
         "historical_rolling_beta_3y": pd.NA,
         "historical_risk_free_rate_sg_10y": pd.NA,
         "historical_total_equity_risk_premium": pd.NA,
+        "valuation_roe": pd.NA,
     }
     for column, value in defaults.items():
         if column not in frame.columns:
@@ -84,6 +85,7 @@ def shared_columns(frame: pd.DataFrame) -> pd.DataFrame:
         "price_basis",
         "book_value_per_share",
         "roe",
+        "valuation_roe",
         "actual_price_to_book",
         "assumed_cost_of_equity",
         "assumed_growth",
@@ -422,16 +424,17 @@ def write_dashboard(annual: pd.DataFrame, quarterly: pd.DataFrame, path: Path) -
   <header>
     <div>
       <h1>Singapore Bank Intrinsic Value Dashboard</h1>
-      <p class="sub">Justified P/B model: fair P/B = (ROE - g) / (COE - g). Use the switches to move between annual and quarterly views, and compare historical sustainable growth/CAPM COE against the original default 3% growth and 9% COE. Intrinsic value = fair P/B x book value/share. Entry price = intrinsic value x 85%. Generated {generated_at}.</p>
+      <p class="sub">Primary method: normalize profitability with the median ROE of up to five completed years, then calculate adjusted P/B using 3% long-term growth and 9% cost of equity. Intrinsic value = adjusted P/B x current book value/share. Entry price = intrinsic value x 85%. Historical CAPM and current-period ROE cases remain available for comparison. Generated {generated_at}.</p>
     </div>
     <div class="switches">
       <div class="mode-switch" aria-label="Analysis period">
-        <button type="button" data-period="annual" class="active" aria-pressed="true">Annual</button>
-        <button type="button" data-period="quarterly" aria-pressed="false">Quarterly</button>
+        <button type="button" data-period="annual" aria-pressed="false">Annual</button>
+        <button type="button" data-period="quarterly" class="active" aria-pressed="true">Quarterly</button>
       </div>
       <div class="mode-switch" aria-label="Assumption mode">
-        <button type="button" data-assumption="historical" class="active" aria-pressed="true">Historical</button>
-        <button type="button" data-assumption="default" aria-pressed="false">Default 3/9</button>
+        <button type="button" data-assumption="normalized" class="active" aria-pressed="true">Normalized ROE</button>
+        <button type="button" data-assumption="historical" aria-pressed="false">Historical</button>
+        <button type="button" data-assumption="default" aria-pressed="false">Current ROE 3/9</button>
       </div>
     </div>
   </header>
@@ -451,7 +454,7 @@ def write_dashboard(annual: pd.DataFrame, quarterly: pd.DataFrame, path: Path) -
     <table>
       <thead>
         <tr>
-          <th>Assumption</th><th>Bank</th><th>Period</th><th>Assumption Year</th><th>Price</th><th>Price Date</th><th>Price Basis</th><th>BVPS</th><th>ROE</th><th>g</th><th>COE</th>
+          <th>Assumption</th><th>Bank</th><th>Period</th><th>Assumption Year</th><th>Price</th><th>Price Date</th><th>Price Basis</th><th>BVPS</th><th>Reported ROE</th><th>Valuation ROE</th><th>g</th><th>COE</th>
           <th>ROE-g</th><th>COE-g</th><th>Fair P/B</th><th>Intrinsic</th><th>Entry</th><th>Margin</th><th>Status</th>
           <th>Basis</th><th>Quality</th><th>Formula</th><th>Guardrail</th><th>Source</th><th>Note</th>
         </tr>
@@ -459,7 +462,7 @@ def write_dashboard(annual: pd.DataFrame, quarterly: pd.DataFrame, path: Path) -
       <tbody id="tableBody"></tbody>
     </table>
   </div>
-  <p class="note">Rows marked annual_fallback use annual fundamental values for that year while still using the actual quarter-end share price. Annual current-year YTD rows carry forward the latest completed annual fundamentals and use the latest available Yahoo market price.</p>
+  <p class="note">Normalized ROE is the median reported annual ROE from up to the five latest completed financial years available at each valuation date. Rows marked annual_fallback use annual fundamental values for that year while still using the actual quarter-end share price. Annual current-year YTD rows carry forward the latest completed annual fundamentals and use the latest available Yahoo market price.</p>
 </main>
 <script>
 const datasets = {payload};
@@ -468,8 +471,9 @@ const periodLabels = {{
   quarterly: {{ title: "Quarterly Calculation Breakdown", price: "Market price" }}
 }};
 const assumptionLabels = {{
+  normalized: "5Y median ROE / 3% growth / 9% COE",
   historical: "Historical growth / CAPM COE",
-  default: "Default 3% growth / 9% COE"
+  default: "Current-period ROE / 3% growth / 9% COE"
 }};
 const banks = ["DBS", "OCBC", "UOB"];
 const series = [
@@ -485,8 +489,8 @@ const tableTitle = document.getElementById("tableTitle");
 const priceLegend = document.getElementById("priceLegend");
 const periodButtons = Array.from(document.querySelectorAll("[data-period]"));
 const assumptionButtons = Array.from(document.querySelectorAll("[data-assumption]"));
-let currentPeriod = "annual";
-let currentAssumption = "historical";
+let currentPeriod = "quarterly";
+let currentAssumption = "normalized";
 
 function money(value) {{ return "S$" + Number(value).toFixed(2); }}
 function pct(value) {{ return (Number(value) * 100).toFixed(1) + "%"; }}
@@ -536,7 +540,8 @@ function showTooltip(event, row, seriesLabel, seriesValue, readout) {{
     Intrinsic value: ${{money(row.intrinsic_value)}}<br>
     Entry price: ${{money(row.entry_price_15pct_margin)}}<br>
     Book value/share: ${{money(row.book_value_per_share)}}<br>
-    ROE: ${{pct(row.roe)}} | g: ${{pct(row.assumed_growth)}} | COE: ${{pct(row.assumed_cost_of_equity)}}<br>
+    Reported ROE: ${{pct(row.roe)}} | Valuation ROE: ${{pct(row.valuation_roe)}}<br>
+    g: ${{pct(row.assumed_growth)}} | COE: ${{pct(row.assumed_cost_of_equity)}}<br>
     Assumption: ${{escapeHtml(row.assumption_label)}} (${{escapeHtml(row.assumption_year)}})<br>
     Fair P/B: ${{mult(row.fair_price_to_book)}} | Actual P/B: ${{mult(row.actual_price_to_book)}}<br>
     Margin to intrinsic: ${{pct(row.margin_to_intrinsic)}}<br>
@@ -548,7 +553,7 @@ function showTooltip(event, row, seriesLabel, seriesValue, readout) {{
     <span>Price: ${{money(row.price)}}</span>
     <span>Intrinsic: ${{money(row.intrinsic_value)}}</span>
     <span>Entry: ${{money(row.entry_price_15pct_margin)}}</span>
-    <span>ROE: ${{pct(row.roe)}}</span>
+    <span>Reported / valuation ROE: ${{pct(row.roe)}} / ${{pct(row.valuation_roe)}}</span>
     <span>g: ${{pct(row.assumed_growth)}} / COE: ${{pct(row.assumed_cost_of_equity)}}</span>
     <span>Margin: ${{pct(row.margin_to_intrinsic)}}</span>
     <span>${{escapeHtml(row.data_quality)}}</span>
@@ -580,7 +585,8 @@ function drawSummary(rows) {{
         <span>Intrinsic <strong>${{money(latest.intrinsic_value)}}</strong></span>
         <span>Entry <strong>${{money(latest.entry_price_15pct_margin)}}</strong></span>
         <span>Margin <strong>${{pct(latest.margin_to_intrinsic)}}</strong></span>
-        <span>ROE <strong>${{pct(latest.roe)}}</strong></span>
+        <span>Reported ROE <strong>${{pct(latest.roe)}}</strong></span>
+        <span>Valuation ROE <strong>${{pct(latest.valuation_roe)}}</strong></span>
         <span>g / COE <strong>${{pct(latest.assumed_growth)}} / ${{pct(latest.assumed_cost_of_equity)}}</strong></span>
         <span><strong>${{escapeHtml(latest.valuation_status)}}</strong></span>
       </div>
@@ -591,8 +597,9 @@ function drawSummary(rows) {{
 
 function drawBank(bank, rows) {{
   const data = rows.filter(r => r.bank === bank).sort((a, b) => new Date(a.period_end) - new Date(b.period_end));
-  const maxValue = Math.ceil(Math.max(...data.flatMap(r => series.map(s => r[s.key]))) * 1.12 / 5) * 5;
-  const minValue = Math.min(0, Math.floor(Math.min(...data.flatMap(r => series.map(s => r[s.key]))) * 0.92 / 5) * 5);
+  const plottedValues = data.flatMap(r => series.map(s => r[s.key]));
+  const maxValue = Math.ceil(Math.max(...plottedValues) * 1.12 / 5) * 5;
+  const minValue = Math.min(0, Math.floor(Math.min(...plottedValues) * 0.92 / 5) * 5);
 
   const width = 1080, height = 350;
   const left = 62, right = 18, top = 18, bottom = 56;
@@ -751,6 +758,7 @@ function drawTable(rows) {{
         <td>${{escapeHtml(row.price_basis)}}</td>
         <td>${{money(row.book_value_per_share)}}</td>
         <td>${{pct(row.roe)}}</td>
+        <td>${{pct(row.valuation_roe)}}</td>
         <td>${{pct(row.assumed_growth)}}</td>
         <td>${{pct(row.assumed_cost_of_equity)}}</td>
         <td>${{pct(row.roe_minus_growth)}}</td>
@@ -826,7 +834,7 @@ def records_for_html(frame: pd.DataFrame) -> list[dict]:
 
 def records_by_assumption(frame: pd.DataFrame) -> dict[str, list[dict]]:
     output: dict[str, list[dict]] = {}
-    for mode in ["historical", "default"]:
+    for mode in ["normalized", "historical", "default"]:
         output[mode] = records_for_html(frame[frame["assumption_mode"] == mode])
     return output
 

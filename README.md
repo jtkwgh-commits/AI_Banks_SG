@@ -79,6 +79,14 @@ kept in the CSV, while valuation growth is normalised with 3-year BVPS growth
 and capped at 5% and at least 2 percentage points below COE so the justified
 P/B denominator does not explode.
 
+The primary dashboard view uses a normalised profitability method for every
+bank. It takes the median reported ROE from up to the latest five completed
+financial years, applies fixed 3% long-term growth and 9% cost of equity, and
+multiplies the resulting adjusted P/B by the latest book value per share. This
+reduces the effect of an unusually strong or weak single reporting period. The
+Historical CAPM and current-period ROE cases remain available as comparison
+views.
+
 ## Outputs
 
 Files are written to `outputs/`:

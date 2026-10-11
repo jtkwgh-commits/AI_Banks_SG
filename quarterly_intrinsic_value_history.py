@@ -16,7 +16,7 @@ import requests
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
-from annual_intrinsic_value_history import FUNDAMENTALS, dbs_pre_bonus
+from annual_intrinsic_value_history import FUNDAMENTALS, dbs_pre_bonus, normalized_roe_for
 from valuation_assumptions import assumption_set_for, load_historical_assumptions
 
 
@@ -26,7 +26,7 @@ REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "*/*"}
 
 START_YEAR = 2016
 END_YEAR = 2026
-LAST_QUARTER_BY_YEAR = {2026: 1}
+LAST_QUARTER_BY_YEAR = {2026: 2}
 
 MARGIN_OF_SAFETY = 0.15
 DBS_BONUS_FACTOR = 11 / 10
@@ -741,7 +741,12 @@ def calculate_intrinsic_values(
     rows = []
     for item in fundamentals:
         price_point = prices[item.ticker][item.period_end]
-        for assumption in assumption_set_for(item.bank, item.year, historical_assumptions):
+        for assumption in assumption_set_for(
+            item.bank,
+            item.year,
+            historical_assumptions,
+            normalized_roe_for(item.bank, item.year),
+        ):
             rows.append(calculate_row(item, price_point, assumption))
     return pd.DataFrame(rows).sort_values(["assumption_mode", "bank", "period_end"])
 
@@ -749,8 +754,11 @@ def calculate_intrinsic_values(
 def calculate_row(item: QuarterFundamental, price_point: PricePoint, assumption: dict) -> dict:
     growth = assumption["assumed_growth"]
     cost_of_equity = assumption["assumed_cost_of_equity"]
-    fair_pb = justified_price_to_book(item.roe, growth, cost_of_equity)
-    roe_minus_growth = item.roe - growth
+    valuation_roe = assumption.get("valuation_roe")
+    if valuation_roe is None or pd.isna(valuation_roe):
+        valuation_roe = item.roe
+    fair_pb = justified_price_to_book(valuation_roe, growth, cost_of_equity)
+    roe_minus_growth = valuation_roe - growth
     cost_minus_growth = cost_of_equity - growth
     actual_price = price_point.price
     intrinsic_value = fair_pb * item.book_value_per_share
@@ -779,10 +787,11 @@ def calculate_row(item: QuarterFundamental, price_point: PricePoint, assumption:
         "eps": item.eps,
         "actual_price_to_book": actual_pb,
         **assumption,
+        "valuation_roe": valuation_roe,
         "roe_minus_growth": roe_minus_growth,
         "cost_of_equity_minus_growth": cost_minus_growth,
         "fair_price_to_book": fair_pb,
-        "fair_pb_formula": f"({item.roe:.1%} - {growth:.1%}) / ({cost_of_equity:.1%} - {growth:.1%})",
+        "fair_pb_formula": f"({valuation_roe:.1%} - {growth:.1%}) / ({cost_of_equity:.1%} - {growth:.1%})",
         "intrinsic_value": intrinsic_value,
         "intrinsic_value_formula": f"{fair_pb:.2f} x S${item.book_value_per_share:.2f}",
         "entry_price_15pct_margin": entry_price,
@@ -800,7 +809,7 @@ def calculate_row(item: QuarterFundamental, price_point: PricePoint, assumption:
 def preferred_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if "assumption_mode" not in frame.columns:
         return frame
-    return frame[frame["assumption_mode"] == "historical"].copy()
+    return frame[frame["assumption_mode"] == "normalized"].copy()
 
 
 def justified_price_to_book(roe: float, growth: float, cost_of_equity: float) -> float:
@@ -832,6 +841,7 @@ def format_latest(frame: pd.DataFrame) -> str:
             "entry_price_15pct_margin",
             "actual_price_to_book",
             "roe",
+            "valuation_roe",
             "assumed_growth",
             "assumed_cost_of_equity",
             "margin_to_intrinsic",
@@ -842,7 +852,7 @@ def format_latest(frame: pd.DataFrame) -> str:
     for col in ["quarter_end_price", "intrinsic_value", "entry_price_15pct_margin"]:
         display[col] = display[col].map(lambda value: f"S${value:.2f}")
     display["actual_price_to_book"] = display["actual_price_to_book"].map(lambda value: f"{value:.2f}x")
-    for col in ["roe", "assumed_growth", "assumed_cost_of_equity", "margin_to_intrinsic"]:
+    for col in ["roe", "valuation_roe", "assumed_growth", "assumed_cost_of_equity", "margin_to_intrinsic"]:
         display[col] = display[col].map(lambda value: f"{value:.1%}")
     return display.to_string(index=False)
 
@@ -860,6 +870,7 @@ def write_breakdown_csv(frame: pd.DataFrame, path: Path) -> None:
         "price_basis",
         "book_value_per_share",
         "roe",
+        "valuation_roe",
         "assumed_growth",
         "assumed_cost_of_equity",
         "historical_sustainable_growth",
@@ -1170,7 +1181,7 @@ def write_interactive_html(frame: pd.DataFrame, path: Path) -> None:
 <body>
 <main>
   <h1>Singapore Bank Quarterly Intrinsic Value History</h1>
-  <p class="sub">Hover inside each chart to see the nearest period. Completed quarters use quarter-end closes; the latest snapshot uses the most recent available quarterly fundamentals and latest Yahoo market price. Formula: fair P/B = (ROE - g) / (COE - g). This view uses historical sustainable growth and CAPM COE. Intrinsic value = fair P/B x book value/share. Entry price = intrinsic value x 85%. Generated {generated_at}.</p>
+  <p class="sub">Hover inside each chart to see the nearest period. The primary method uses median ROE from up to five completed years, 3% growth, and 9% cost of equity. Completed quarters use quarter-end closes; the latest snapshot uses the most recent available quarterly fundamentals and latest Yahoo market price. Intrinsic value = adjusted P/B x book value/share. Entry price = intrinsic value x 85%. Generated {generated_at}.</p>
   <div class="legend">
     <span class="price">Market price</span>
     <span class="intrinsic">Intrinsic value</span>
@@ -1184,7 +1195,7 @@ def write_interactive_html(frame: pd.DataFrame, path: Path) -> None:
     <table>
       <thead>
         <tr>
-          <th>Assumption</th><th>Bank</th><th>Period</th><th>Assumption Year</th><th>Price</th><th>Price Date</th><th>Price Basis</th><th>BVPS</th><th>ROE</th><th>g</th><th>COE</th>
+          <th>Assumption</th><th>Bank</th><th>Period</th><th>Assumption Year</th><th>Price</th><th>Price Date</th><th>Price Basis</th><th>BVPS</th><th>Reported ROE</th><th>Valuation ROE</th><th>g</th><th>COE</th>
           <th>ROE-g</th><th>COE-g</th><th>Fair P/B</th><th>Intrinsic</th><th>Entry</th><th>Margin</th><th>Status</th>
           <th>Basis</th><th>Quality</th><th>Formula</th><th>Guardrail</th><th>Source</th><th>Note</th>
         </tr>
@@ -1250,7 +1261,8 @@ function showTooltip(event, row, seriesLabel, seriesValue, readout) {{
     Intrinsic value: ${{money(row.intrinsic_value)}}<br>
     Entry price: ${{money(row.entry_price_15pct_margin)}}<br>
     Book value/share: ${{money(row.book_value_per_share)}}<br>
-    ROE: ${{pct(row.roe)}} | g: ${{pct(row.assumed_growth)}} | COE: ${{pct(row.assumed_cost_of_equity)}}<br>
+    Reported / valuation ROE: ${{pct(row.roe)}} / ${{pct(row.valuation_roe)}}<br>
+    g: ${{pct(row.assumed_growth)}} | COE: ${{pct(row.assumed_cost_of_equity)}}<br>
     Assumption: ${{row.assumption_label}} (${{row.assumption_year}})<br>
     Fair P/B: ${{mult(row.fair_price_to_book)}} | Actual P/B: ${{mult(row.actual_price_to_book)}}<br>
     Margin to intrinsic: ${{pct(row.margin_to_intrinsic)}}<br>
@@ -1263,7 +1275,7 @@ function showTooltip(event, row, seriesLabel, seriesValue, readout) {{
     <span>${{row.price_date}}</span>
     <span>Intrinsic: ${{money(row.intrinsic_value)}}</span>
     <span>Entry: ${{money(row.entry_price_15pct_margin)}}</span>
-    <span>ROE: ${{pct(row.roe)}}</span>
+    <span>Reported / valuation ROE: ${{pct(row.roe)}} / ${{pct(row.valuation_roe)}}</span>
     <span>g: ${{pct(row.assumed_growth)}} / COE: ${{pct(row.assumed_cost_of_equity)}}</span>
     <span>Margin: ${{pct(row.margin_to_intrinsic)}}</span>
     <span>${{row.data_quality}}</span>
@@ -1442,6 +1454,7 @@ def records_for_html(frame: pd.DataFrame) -> list[dict]:
         "price_basis",
         "book_value_per_share",
         "roe",
+        "valuation_roe",
         "actual_price_to_book",
         "assumed_cost_of_equity",
         "assumed_growth",
@@ -1477,6 +1490,7 @@ def build_table_rows(frame: pd.DataFrame) -> list[str]:
             row.get("price_basis", ""),
             f"S${row['book_value_per_share']:.2f}",
             f"{row['roe']:.1%}",
+            f"{row['valuation_roe']:.1%}",
             f"{row['assumed_growth']:.1%}",
             f"{row['assumed_cost_of_equity']:.1%}",
             f"{row['roe_minus_growth']:.1%}",

@@ -14,6 +14,7 @@ HISTORICAL_ASSUMPTIONS_CSV = OUTPUT_DIR / "historical_growth_coe.csv"
 
 DEFAULT_GROWTH = 0.03
 DEFAULT_COST_OF_EQUITY = 0.09
+NORMALIZED_ROE_LOOKBACK_YEARS = 5
 
 
 def load_historical_assumptions(path: Path = HISTORICAL_ASSUMPTIONS_CSV) -> pd.DataFrame:
@@ -43,11 +44,34 @@ def assumption_set_for(
     bank: str,
     year: int,
     historical_assumptions: pd.DataFrame,
+    normalized_roe: float,
 ) -> list[dict[str, Any]]:
     return [
+        normalized_assumption_for(year, normalized_roe),
         historical_assumption_for(bank, year, historical_assumptions),
         default_assumption_for(year),
     ]
+
+
+def normalized_assumption_for(year: int, normalized_roe: float) -> dict[str, Any]:
+    return {
+        "assumption_mode": "normalized",
+        "assumption_label": "5Y median ROE / 3% growth / 9% COE",
+        "assumption_year": year,
+        "assumption_source": (
+            f"Median reported ROE over up to {NORMALIZED_ROE_LOOKBACK_YEARS} completed years; "
+            "fixed 3% long-term growth and 9% cost of equity"
+        ),
+        "valuation_roe": normalized_roe,
+        "assumed_growth": DEFAULT_GROWTH,
+        "assumed_cost_of_equity": DEFAULT_COST_OF_EQUITY,
+        "historical_sustainable_growth": math.nan,
+        "historical_bvps_growth_yoy": math.nan,
+        "historical_rolling_beta_3y": math.nan,
+        "historical_risk_free_rate_sg_10y": math.nan,
+        "historical_total_equity_risk_premium": math.nan,
+        "growth_guardrail_note": "normalized 5Y median ROE; fixed 3% growth / 9% COE",
+    }
 
 
 def default_assumption_for(year: int) -> dict[str, Any]:
@@ -56,6 +80,7 @@ def default_assumption_for(year: int) -> dict[str, Any]:
         "assumption_label": "Default 3% growth / 9% COE",
         "assumption_year": year,
         "assumption_source": "Original fixed assumption",
+        "valuation_roe": math.nan,
         "assumed_growth": DEFAULT_GROWTH,
         "assumed_cost_of_equity": DEFAULT_COST_OF_EQUITY,
         "historical_sustainable_growth": math.nan,
@@ -89,6 +114,7 @@ def historical_assumption_for(
         "assumption_label": "Historical growth / CAPM COE",
         "assumption_year": assumption_year,
         "assumption_source": source,
+        "valuation_roe": math.nan,
         "assumed_growth": float(row["model_growth_for_valuation"]),
         "assumed_cost_of_equity": float(row["cost_of_equity_capm"]),
         "historical_sustainable_growth": float(row["sustainable_growth"]),

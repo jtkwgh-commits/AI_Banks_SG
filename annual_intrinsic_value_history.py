@@ -12,7 +12,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from valuation_assumptions import assumption_set_for, load_historical_assumptions
+from valuation_assumptions import (
+    NORMALIZED_ROE_LOOKBACK_YEARS,
+    assumption_set_for,
+    load_historical_assumptions,
+)
 
 
 OUTPUT_DIR = Path("outputs")
@@ -88,6 +92,17 @@ FUNDAMENTALS: list[BankYear] = [
 ]
 
 
+def normalized_roe_for(bank: str, year: int) -> float:
+    completed = sorted(
+        (item for item in FUNDAMENTALS if item.bank == bank and item.year <= year),
+        key=lambda item: item.year,
+    )
+    if not completed:
+        raise RuntimeError(f"No completed annual ROE history available for {bank} through {year}.")
+    lookback = completed[-NORMALIZED_ROE_LOOKBACK_YEARS:]
+    return float(np.median([item.roe for item in lookback]))
+
+
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -112,7 +127,12 @@ def main() -> None:
             if item.year > latest_completed_year
             else prices[item.ticker][item.year]
         )
-        for assumption in assumption_set_for(item.bank, item.year, historical_assumptions):
+        for assumption in assumption_set_for(
+            item.bank,
+            item.year,
+            historical_assumptions,
+            normalized_roe_for(item.bank, item.year),
+        ):
             rows.append(calculate_row(item, price_point, assumption))
 
     result = pd.DataFrame(rows).sort_values(["assumption_mode", "bank", "year"])
@@ -127,7 +147,7 @@ def main() -> None:
     print(f"Wrote breakdown table:        {(OUTPUT_DIR / 'annual_intrinsic_value_breakdown.csv').resolve()}")
     print(f"Wrote interactive HTML:       {(OUTPUT_DIR / 'annual_intrinsic_value_interactive.html').resolve()}")
     print(f"Wrote comparison chart:       {(OUTPUT_DIR / 'annual_intrinsic_value_vs_price.png').resolve()}")
-    print("\nLatest year screen, historical assumptions:")
+    print("\nLatest year screen, normalized ROE assumptions:")
     latest = preferred_frame(result)
     latest = latest[latest["year"] == latest["year"].max()]
     print(format_latest(latest))
@@ -159,8 +179,11 @@ def annual_fundamentals_with_current_snapshot() -> list[BankYear]:
 def calculate_row(item: BankYear, price_point: PricePoint, assumption: dict) -> dict:
     growth = assumption["assumed_growth"]
     cost_of_equity = assumption["assumed_cost_of_equity"]
-    fair_pb = justified_price_to_book(item.roe, growth, cost_of_equity)
-    roe_minus_growth = item.roe - growth
+    valuation_roe = assumption.get("valuation_roe")
+    if valuation_roe is None or pd.isna(valuation_roe):
+        valuation_roe = item.roe
+    fair_pb = justified_price_to_book(valuation_roe, growth, cost_of_equity)
+    roe_minus_growth = valuation_roe - growth
     cost_minus_growth = cost_of_equity - growth
     actual_price = price_point.price
     intrinsic_value = fair_pb * item.book_value_per_share
@@ -180,10 +203,11 @@ def calculate_row(item: BankYear, price_point: PricePoint, assumption: dict) -> 
         "dividend_per_share": item.dividend_per_share,
         "actual_price_to_book": actual_pb,
         **assumption,
+        "valuation_roe": valuation_roe,
         "roe_minus_growth": roe_minus_growth,
         "cost_of_equity_minus_growth": cost_minus_growth,
         "fair_price_to_book": fair_pb,
-        "fair_pb_formula": f"({item.roe:.1%} - {growth:.1%}) / ({cost_of_equity:.1%} - {growth:.1%})",
+        "fair_pb_formula": f"({valuation_roe:.1%} - {growth:.1%}) / ({cost_of_equity:.1%} - {growth:.1%})",
         "intrinsic_value": intrinsic_value,
         "intrinsic_value_formula": f"{fair_pb:.2f} x S${item.book_value_per_share:.2f}",
         "entry_price_15pct_margin": entry_price,
@@ -197,7 +221,7 @@ def calculate_row(item: BankYear, price_point: PricePoint, assumption: dict) -> 
 def preferred_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if "assumption_mode" not in frame.columns:
         return frame
-    return frame[frame["assumption_mode"] == "historical"].copy()
+    return frame[frame["assumption_mode"] == "normalized"].copy()
 
 
 def fetch_year_end_prices(ticker: str, start_year: int, end_year: int) -> dict[int, PricePoint]:
@@ -296,6 +320,7 @@ def write_breakdown_csv(frame: pd.DataFrame, path: Path) -> None:
         "price_basis",
         "book_value_per_share",
         "roe",
+        "valuation_roe",
         "assumed_growth",
         "assumed_cost_of_equity",
         "historical_sustainable_growth",
@@ -537,7 +562,7 @@ def write_interactive_html(frame: pd.DataFrame, path: Path) -> None:
 <body>
 <main>
   <h1>Singapore Bank Intrinsic Value History</h1>
-  <p class="sub">Hover near each point to see the market price, intrinsic value, entry price, ROE, fair P/B, and valuation margin. Completed years use year-end closes; the current-year point is a YTD latest-price snapshot using the most recent annual fundamentals. Model: fair P/B = (ROE - g) / (COE - g). This view uses historical sustainable growth and CAPM COE. Entry price = intrinsic value x 85%.</p>
+  <p class="sub">Hover near each point to see market price, intrinsic value, entry price, and valuation margin. The primary method uses median ROE from up to five completed years, 3% growth, and 9% cost of equity. Completed years use year-end closes; the current-year point is a YTD latest-price snapshot using the most recent annual fundamentals. Entry price = intrinsic value x 85%.</p>
   <div class="legend">
     <span class="price">Market price</span>
     <span class="intrinsic">Intrinsic value</span>
@@ -551,7 +576,7 @@ def write_interactive_html(frame: pd.DataFrame, path: Path) -> None:
     <table>
       <thead>
         <tr>
-          <th>Assumption</th><th>Bank</th><th>Year</th><th>Assumption Year</th><th>Price</th><th>Price Date</th><th>Price Basis</th><th>BVPS</th><th>ROE</th><th>g</th><th>COE</th>
+          <th>Assumption</th><th>Bank</th><th>Year</th><th>Assumption Year</th><th>Price</th><th>Price Date</th><th>Price Basis</th><th>BVPS</th><th>Reported ROE</th><th>Valuation ROE</th><th>g</th><th>COE</th>
           <th>ROE-g</th><th>COE-g</th><th>Fair P/B</th><th>Intrinsic</th><th>Entry</th><th>Margin</th><th>Status</th><th>Formula</th><th>Guardrail</th><th>Source</th>
         </tr>
       </thead>
@@ -618,7 +643,8 @@ function showTooltip(event, row, seriesLabel, seriesValue, readout) {{
     Intrinsic value: ${{money(row.intrinsic_value)}}<br>
     Entry price: ${{money(row.entry_price_15pct_margin)}}<br>
     Book value/share: ${{money(row.book_value_per_share)}}<br>
-    ROE: ${{pct(row.roe)}} | g: ${{pct(row.assumed_growth)}} | COE: ${{pct(row.assumed_cost_of_equity)}}<br>
+    Reported / valuation ROE: ${{pct(row.roe)}} / ${{pct(row.valuation_roe)}}<br>
+    g: ${{pct(row.assumed_growth)}} | COE: ${{pct(row.assumed_cost_of_equity)}}<br>
     Fair P/B: ${{mult(row.fair_price_to_book)}} | Actual P/B: ${{mult(row.actual_price_to_book)}}<br>
     Margin to intrinsic: ${{pct(row.margin_to_intrinsic)}}<br>
     Status: ${{row.valuation_status}}
@@ -629,7 +655,7 @@ function showTooltip(event, row, seriesLabel, seriesValue, readout) {{
     <span>${{row.price_date}}</span>
     <span>Intrinsic: ${{money(row.intrinsic_value)}}</span>
     <span>Entry: ${{money(row.entry_price_15pct_margin)}}</span>
-    <span>ROE: ${{pct(row.roe)}}</span>
+    <span>Reported / valuation ROE: ${{pct(row.roe)}} / ${{pct(row.valuation_roe)}}</span>
     <span>Margin: ${{pct(row.margin_to_intrinsic)}}</span>
   `;
   tooltip.style.opacity = "1";
@@ -819,6 +845,7 @@ def build_table_rows(frame: pd.DataFrame) -> list[str]:
             row.get("price_basis", ""),
             money(row["book_value_per_share"]),
             percent(row["roe"]),
+            percent(row["valuation_roe"]),
             percent(row["assumed_growth"]),
             percent(row["assumed_cost_of_equity"]),
             percent(row["roe_minus_growth"]),
@@ -915,6 +942,7 @@ def format_latest(frame: pd.DataFrame) -> str:
             "entry_price_15pct_margin",
             "actual_price_to_book",
             "roe",
+            "valuation_roe",
             "assumed_growth",
             "assumed_cost_of_equity",
             "margin_to_intrinsic",
@@ -924,7 +952,7 @@ def format_latest(frame: pd.DataFrame) -> str:
     for col in ["year_end_price", "intrinsic_value", "entry_price_15pct_margin"]:
         display[col] = display[col].map(lambda value: f"S${value:.2f}")
     display["actual_price_to_book"] = display["actual_price_to_book"].map(lambda value: f"{value:.2f}x")
-    for col in ["roe", "assumed_growth", "assumed_cost_of_equity", "margin_to_intrinsic"]:
+    for col in ["roe", "valuation_roe", "assumed_growth", "assumed_cost_of_equity", "margin_to_intrinsic"]:
         display[col] = display[col].map(lambda value: f"{value:.1%}")
     return display.to_string(index=False)
 

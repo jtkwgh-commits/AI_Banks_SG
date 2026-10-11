@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from annual_intrinsic_value_history import normalized_roe_for
+
 
 OUTPUT_DIR = Path("outputs")
 
@@ -37,32 +39,42 @@ BANKS = [
     BankInput(
         bank="DBS",
         ticker="D05.SI",
-        book_value_per_share=24.29,
-        roe=0.162,
-        dividend_per_share=3.06,
-        eps=3.88,
-        input_period="FY2025",
-        source_note="DBS Annual Report 2025 five-year summary.",
+        book_value_per_share=24.69,
+        roe=0.175,
+        dividend_per_share=3.24,
+        eps=4.27,
+        input_period="1H2026",
+        source_note=(
+            "DBS 2Q26 performance summary: 1H26 annualised ROE/EPS and 30 Jun 2026 "
+            "net book value; dividend annualised from the 2Q26 interim and capital-return "
+            "dividends (S$0.66 + S$0.15)."
+        ),
     ),
     BankInput(
         bank="OCBC",
         ticker="O39.SI",
-        book_value_per_share=13.38,
-        roe=0.126,
-        dividend_per_share=0.99,
-        eps=1.63,
-        input_period="FY2025",
-        source_note="OCBC FY2025 financial highlights.",
+        book_value_per_share=13.73,
+        roe=0.137,
+        dividend_per_share=0.94,
+        eps=1.86,
+        input_period="1H2026",
+        source_note=(
+            "OCBC 1H26 media release and financial highlights: annualised ROE/EPS and "
+            "30 Jun 2026 NAV; dividend annualised from the S$0.47 interim dividend."
+        ),
     ),
     BankInput(
         bank="UOB",
         ticker="U11.SI",
-        book_value_per_share=29.79,
-        roe=0.115,
-        dividend_per_share=1.56,
-        eps=3.41,
-        input_period="1Q2026 annualised ROE/EPS, FY2025 dividend",
-        source_note="UOB financial highlights: 1Q26 ROE/NAV/EPS and FY2025 dividend.",
+        book_value_per_share=29.99,
+        roe=0.116,
+        dividend_per_share=1.76,
+        eps=3.46,
+        input_period="1H2026",
+        source_note=(
+            "UOB 1H26 condensed financial statements: annualised ROE/EPS and 30 Jun "
+            "2026 NAV; dividend annualised from the S$0.88 interim dividend."
+        ),
     ),
 ]
 
@@ -78,7 +90,8 @@ def main() -> None:
     for bank in BANKS:
         price_snapshot = fetch_latest_price(bank.ticker)
         current_price = price_snapshot.price
-        fair_pb = justified_price_to_book(bank.roe, terminal_growth, cost_of_equity)
+        valuation_roe = normalized_roe_for(bank.bank, 2026)
+        fair_pb = justified_price_to_book(valuation_roe, terminal_growth, cost_of_equity)
         fair_value = fair_pb * bank.book_value_per_share
         entry_price = fair_value * (1.0 - margin_of_safety)
         current_pb = current_price / bank.book_value_per_share
@@ -97,6 +110,7 @@ def main() -> None:
                 "price_source": price_snapshot.source,
                 "book_value_per_share": bank.book_value_per_share,
                 "roe": bank.roe,
+                "valuation_roe": valuation_roe,
                 "eps": bank.eps,
                 "dividend_per_share": bank.dividend_per_share,
                 "current_price_to_book": current_pb,
@@ -207,7 +221,7 @@ def write_chart(frame: pd.DataFrame, path: Path) -> None:
     fig.text(
         0.015,
         0.02,
-        "Model: justified P/B = (ROE - g) / (cost of equity - g). Assumptions: 9% COE, 3% g, 15% margin of safety.",
+        "Model: justified P/B using 5Y median ROE. Assumptions: 9% COE, 3% g, 15% margin of safety.",
         fontsize=9,
         color="#4b5563",
     )
@@ -226,7 +240,7 @@ def write_sensitivity(
     for _, row in frame.iterrows():
         for coe in [0.085, cost_of_equity, 0.10]:
             for growth in [0.02, terminal_growth, 0.04]:
-                fair_pb = justified_price_to_book(row["roe"], growth, coe)
+                fair_pb = justified_price_to_book(row["valuation_roe"], growth, coe)
                 fair_value = fair_pb * row["book_value_per_share"]
                 rows.append(
                     {
@@ -248,6 +262,7 @@ def format_table(frame: pd.DataFrame) -> str:
         "fair_value",
         "entry_price_15pct_margin",
         "current_price_to_book",
+        "valuation_roe",
         "dividend_yield",
         "current_vs_fair_value",
         "valuation_status",
@@ -257,6 +272,7 @@ def format_table(frame: pd.DataFrame) -> str:
     for col in money_cols:
         display[col] = display[col].map(lambda value: f"S${value:.2f}")
     display["current_price_to_book"] = display["current_price_to_book"].map(lambda value: f"{value:.2f}x")
+    display["valuation_roe"] = display["valuation_roe"].map(lambda value: f"{value:.1%}")
     for col in ["dividend_yield", "current_vs_fair_value"]:
         display[col] = display[col].map(lambda value: f"{value:.1%}")
     return display.to_string(index=False)
